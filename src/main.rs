@@ -2,10 +2,21 @@ use axum::{
     Router,
     response::{Html, IntoResponse, Response},
     routing::get,
+    body::Body,
+    extract::State,
 };
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::{error, info};
+use usvg::{fontdb, Tree};
+use tiny_skia::Pixmap;
+use base64::{engine::general_purpose, Engine as _};
+
+#[derive(Clone)]
+struct AppState {
+    usvg_options: Arc<usvg::Options<'static>>,
+}
 
 const LAT: f64 = 47.4197;
 const LON: f64 = 8.4344;
@@ -60,6 +71,7 @@ struct Flight {
     altitude: Option<f64>,
     distance: f64,
     photo_url: Option<String>,
+    photo_base64: Option<String>,
     origin_iata: Option<String>,
     origin_name: Option<String>,
     dest_iata: Option<String>,
@@ -70,9 +82,20 @@ struct Flight {
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let mut fontdb = fontdb::Database::new();
+    fontdb.load_system_fonts();
+    let mut usvg_options = usvg::Options::default();
+    usvg_options.fontdb = Arc::new(fontdb);
+
+    let state = AppState {
+        usvg_options: Arc::new(usvg_options),
+    };
+
     let app = Router::new()
         .route("/", get(index))
-        .route("/image.svg", get(get_image));
+        .route("/image.svg", get(get_image))
+        .route("/image.png", get(get_image_png))
+        .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().unwrap();
@@ -85,7 +108,7 @@ async fn index() -> Html<&'static str> {
     Html("<h1>Radar</h1><p>Go to <a href='/image.svg'>/image.svg</a></p>")
 }
 
-async fn get_image() -> impl IntoResponse {
+async fn get_image(_state: State<AppState>) -> impl IntoResponse {
     match fetch_closest_flight().await {
         Ok(Some(flight)) => {
             let svg = render_svg(&flight);
@@ -111,6 +134,62 @@ async fn get_image() -> impl IntoResponse {
                 .unwrap()
         }
     }
+}
+
+async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
+    match fetch_closest_flight().await {
+        Ok(Some(flight)) => {
+            let svg = render_svg(&flight);
+            match svg_to_png(&svg, &state.usvg_options) {
+                Ok(png) => Response::builder()
+                    .header("Content-Type", "image/png")
+                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    .body(Body::from(png))
+                    .unwrap(),
+                Err(e) => {
+                    error!("Error rendering PNG: {}", e);
+                    Response::builder()
+                        .status(500)
+                        .body(Body::from(format!("Error rendering PNG: {}", e)))
+                        .unwrap()
+                }
+            }
+        }
+        Ok(None) => {
+            let svg = render_no_flight_svg();
+            match svg_to_png(&svg, &state.usvg_options) {
+                Ok(png) => Response::builder()
+                    .header("Content-Type", "image/png")
+                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    .body(Body::from(png))
+                    .unwrap(),
+                Err(e) => {
+                    error!("Error rendering PNG: {}", e);
+                    Response::builder()
+                        .status(500)
+                        .body(Body::from(format!("Error rendering PNG: {}", e)))
+                        .unwrap()
+                }
+            }
+        }
+        Err(e) => {
+            error!("Error fetching flight: {}", e);
+            Response::builder()
+                .status(500)
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap()
+        }
+    }
+}
+
+fn svg_to_png(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let tree = Tree::from_str(svg, opt)?;
+
+    let pixmap_size = tree.size();
+    let mut pixmap = Pixmap::new(pixmap_size.width() as u32, pixmap_size.height() as u32).unwrap();
+    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+    Ok(pixmap.encode_png()?)
 }
 
 async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Error>> {
@@ -148,6 +227,7 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
                 altitude,
                 distance,
                 photo_url: None,
+                photo_base64: None,
                 origin_iata: None,
                 origin_name: None,
                 dest_iata: None,
@@ -159,7 +239,16 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
     flights.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
 
     if let Some(mut flight) = flights.first().cloned() {
-        flight.photo_url = fetch_photo_url(&flight.icao24).await;
+        if let Some(url) = fetch_photo_url(&flight.icao24).await {
+            flight.photo_url = Some(url.clone());
+            // Fetch the image and convert to base64 for resvg
+            if let Ok(resp) = client.get(url).send().await {
+                if let Ok(bytes) = resp.bytes().await {
+                    let b64 = general_purpose::STANDARD.encode(bytes);
+                    flight.photo_base64 = Some(format!("data:image/jpeg;base64,{}", b64));
+                }
+            }
+        }
         if let Some(route) = fetch_route(&flight.callsign).await {
             flight.origin_iata = Some(route.origin.iata_code);
             flight.origin_name = Some(route.origin.municipality);
@@ -221,13 +310,13 @@ fn render_svg(flight: &Flight) -> String {
     let dest_iata = flight.dest_iata.as_deref().unwrap_or("???");
     let dest_name = flight.dest_name.as_deref().unwrap_or("Unknown Destination");
 
-    let photo_url = flight.photo_url.as_deref().unwrap_or("");
-    let has_photo = !photo_url.is_empty();
+    let photo_data = flight.photo_base64.as_deref().unwrap_or("");
+    let has_photo = !photo_data.is_empty();
 
     let image_layer = if has_photo {
         format!(
             r#"<image id="bg" href="{}" width="1600" height="1200" preserveAspectRatio="xMidYMid meet" />"#,
-            photo_url
+            photo_data
         )
     } else {
         "".to_string()
@@ -324,6 +413,7 @@ mod tests {
             altitude: Some(10000.0),
             distance: 0.1,
             photo_url: Some("http://example.com/photo.jpg".to_string()),
+            photo_base64: Some("data:image/jpeg;base64,VEVTVA==".to_string()),
             origin_iata: Some("WAW".to_string()),
             origin_name: Some("Warsaw".to_string()),
             dest_iata: Some("ZRH".to_string()),
@@ -334,7 +424,7 @@ mod tests {
         assert!(svg.contains("WAW"));
         assert!(svg.contains("ZRH"));
         assert!(svg.contains("32808 ft"));
-        assert!(svg.contains("http://example.com/photo.jpg"));
+        assert!(svg.contains("data:image/jpeg;base64,VEVTVA=="));
     }
 
     #[test]
