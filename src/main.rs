@@ -649,8 +649,8 @@ fn render_svg(flight: &Flight) -> String {
   {image_layer}
 
   <!-- Overlay Boxes -->
-  <rect x='0' y='0' width='1600' height='160' fill='white' fill-opacity='0.8' />
-  <rect x='0' y='1040' width='1600' height='160' fill='white' fill-opacity='0.8' />
+  <rect x='0' y='0' width='1600' height='160' fill='white' fill-opacity='1.0' />
+  <rect x='0' y='1040' width='1600' height='160' fill='white' fill-opacity='1.0' />
 
   <!-- Route (Top) -->
   <g transform='translate(0, 105)'>
