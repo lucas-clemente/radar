@@ -841,15 +841,12 @@ mod tests {
     #[test]
     fn test_render_no_flight_svg() {
         let svg = render_no_flight_svg();
-        assert!(svg.contains("No flights overhead"));
+        assert!(svg.contains("rect width='1600' height='1200' fill='white'"));
     }
 }
 
 fn render_no_flight_svg() -> String {
     r#"<svg width='1600' height='1200' viewBox='0 0 1600 1200' xmlns='http://www.w3.org/2000/svg'>
   <rect width='1600' height='1200' fill='white' />
-
-  <text x='800' y='600' font-family='Google Sans, sans-serif' font-size='100' text-anchor='middle' fill='#000000'>No flights overhead</text>
-
 </svg>"#.to_string()
 }
