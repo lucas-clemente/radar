@@ -34,6 +34,7 @@ const PALETTE: [[u8; 3]; 6] = [
 const LAT: f64 = 47.41876326848794;
 const LON: f64 = 8.426291132310645;
 const BOX_SIZE: f64 = 0.1; // Roughly 10km
+const MAX_ALTITUDE_METERS: f64 = 6096.0; // 20,000 feet
 
 #[derive(Debug, Deserialize)]
 struct OpenSkyResponse {
@@ -519,8 +520,16 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
         let callsign = state[1].as_str().unwrap_or_default().trim().to_string();
         let longitude = state[5].as_f64();
         let latitude = state[6].as_f64();
+        let baro_altitude = state[7].as_f64();
 
         if let (Some(lat), Some(lon)) = (latitude, longitude) {
+            // Filter out flights above the altitude limit
+            if let Some(alt) = baro_altitude {
+                if alt > MAX_ALTITUDE_METERS {
+                    continue;
+                }
+            }
+
             let distance = ((lat - LAT).powi(2) + (lon - LON).powi(2)).sqrt();
             flights.push(Flight {
                 icao24,
