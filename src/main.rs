@@ -18,6 +18,7 @@ use usvg::{Tree, fontdb};
 #[derive(Clone)]
 struct AppState {
     usvg_options: Arc<usvg::Options<'static>>,
+    client: reqwest::Client,
 }
 
 const FONT_DATA: &[u8] = include_bytes!("../GoogleSans-VariableFont_GRAD,opsz,wght.ttf");
@@ -127,8 +128,14 @@ async fn main() {
     let mut usvg_options = usvg::Options::default();
     usvg_options.fontdb = Arc::new(fontdb);
 
+    let client = reqwest::Client::builder()
+        .user_agent("Radar/0.1.0")
+        .build()
+        .unwrap();
+
     let state = AppState {
         usvg_options: Arc::new(usvg_options),
+        client,
     };
 
     let app = Router::new()
@@ -153,222 +160,97 @@ async fn index() -> Html<&'static str> {
     )
 }
 
-async fn get_image(_state: State<AppState>) -> impl IntoResponse {
-    let start = std::time::Instant::now();
-    let fetch_result = fetch_closest_flight().await;
-    let fetch_duration = start.elapsed();
-
-    match fetch_result {
-        Ok(Some(flight)) => {
-            let render_start = std::time::Instant::now();
-            let svg = render_svg(&flight);
-            let render_duration = render_start.elapsed();
-
-            info!(
-                "Request processed: fetch={:?}, render_svg={:?}",
-                fetch_duration, render_duration
-            );
-
-            Response::builder()
-                .header("Content-Type", "image/svg+xml")
-                .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                .body(svg)
-                .unwrap()
-        }
-        Ok(None) => {
-            let svg = render_no_flight_svg();
-            info!("No flight found: fetch={:?}", fetch_duration);
-            Response::builder()
-                .header("Content-Type", "image/svg+xml")
-                .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                .body(svg)
-                .unwrap()
-        }
-        Err(e) => {
-            error!("Error fetching flight: {} (took {:?})", e, fetch_duration);
-            Response::builder()
-                .status(500)
-                .body(format!("Error: {}", e))
-                .unwrap()
-        }
+async fn get_image(State(state): State<AppState>) -> impl IntoResponse {
+    match fetch_svg(&state).await {
+        Ok(svg) => make_response("image/svg+xml", svg),
+        Err(resp) => resp,
     }
 }
 
 async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
-    let start = std::time::Instant::now();
-    let fetch_result = fetch_closest_flight().await;
-    let fetch_duration = start.elapsed();
+    let svg = match fetch_svg(&state).await {
+        Ok(svg) => svg,
+        Err(resp) => return resp,
+    };
 
-    match fetch_result {
-        Ok(Some(flight)) => {
-            let svg_start = std::time::Instant::now();
-            let svg = render_svg(&flight);
-            let svg_duration = svg_start.elapsed();
-
-            let png_start = std::time::Instant::now();
-            match svg_to_png(&svg, &state.usvg_options) {
-                Ok(png) => {
-                    let png_duration = png_start.elapsed();
-                    info!(
-                        "Request processed (PNG): fetch={:?}, render_svg={:?}, render_png={:?}",
-                        fetch_duration, svg_duration, png_duration
-                    );
-
-                    Response::builder()
-                        .header("Content-Type", "image/png")
-                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                        .body(Body::from(png))
-                        .unwrap()
-                }
-                Err(e) => {
-                    error!("Error rendering PNG: {}", e);
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(format!("Error rendering PNG: {}", e)))
-                        .unwrap()
-                }
-            }
-        }
-        Ok(None) => {
-            let svg = render_no_flight_svg();
-            match svg_to_png(&svg, &state.usvg_options) {
-                Ok(png) => {
-                    info!("No flight found (PNG): fetch={:?}", fetch_duration);
-                    Response::builder()
-                        .header("Content-Type", "image/png")
-                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                        .body(Body::from(png))
-                        .unwrap()
-                }
-                Err(e) => {
-                    error!("Error rendering PNG: {}", e);
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(format!("Error rendering PNG: {}", e)))
-                        .unwrap()
-                }
-            }
-        }
-        Err(e) => {
-            error!("Error fetching flight: {} (took {:?})", e, fetch_duration);
-            Response::builder()
-                .status(500)
-                .body(Body::from(format!("Error: {}", e)))
-                .unwrap()
-        }
-    }
+    handle_result(
+        svg_to_png(&svg, &state.usvg_options),
+        "image/png",
+        "Error rendering PNG",
+    )
 }
 
 async fn get_image_dithered_png(State(state): State<AppState>) -> impl IntoResponse {
-    let start = std::time::Instant::now();
-    let fetch_result = fetch_closest_flight().await;
-    let fetch_duration = start.elapsed();
+    let svg = match fetch_svg(&state).await {
+        Ok(svg) => svg,
+        Err(resp) => return resp,
+    };
 
-    match fetch_result {
-        Ok(Some(flight)) => {
-            let svg = render_svg(&flight);
-            match svg_to_dithered_png(&svg, &state.usvg_options) {
-                Ok(png) => {
-                    info!(
-                        "Request processed (Dithered PNG): fetch={:?}, total={:?}",
-                        fetch_duration,
-                        start.elapsed()
-                    );
-                    Response::builder()
-                        .header("Content-Type", "image/png")
-                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                        .body(Body::from(png))
-                        .unwrap()
-                }
-                Err(e) => {
-                    error!("Error rendering dithered PNG: {}", e);
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap()
-                }
-            }
-        }
-        Ok(None) => {
-            let svg = render_no_flight_svg();
-            match svg_to_dithered_png(&svg, &state.usvg_options) {
-                Ok(png) => Response::builder()
-                    .header("Content-Type", "image/png")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                    .body(Body::from(png))
-                    .unwrap(),
-                Err(e) => {
-                    error!("Error rendering dithered PNG: {}", e);
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap()
-                }
-            }
-        }
+    handle_result(
+        svg_to_dithered_png(&svg, &state.usvg_options),
+        "image/png",
+        "Error rendering dithered PNG",
+    )
+}
+
+async fn get_image_bin(State(state): State<AppState>) -> impl IntoResponse {
+    let svg = match fetch_svg(&state).await {
+        Ok(svg) => svg,
+        Err(resp) => return resp,
+    };
+
+    handle_result(
+        svg_to_epd_bin(&svg, &state.usvg_options),
+        "application/octet-stream",
+        "Error rendering BIN",
+    )
+}
+
+fn make_response(content_type: &str, body: impl Into<Body>) -> Response {
+    Response::builder()
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+        .body(body.into())
+        .unwrap()
+}
+
+fn handle_result<T, E>(result: Result<T, E>, content_type: &str, error_msg: &str) -> Response
+where
+    T: Into<Body>,
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(data) => make_response(content_type, data),
         Err(e) => {
-            error!("Error fetching flight: {}", e);
+            error!("{}: {}", error_msg, e);
             Response::builder()
                 .status(500)
-                .body(Body::from(format!("Error: {}", e)))
+                .body(Body::from(format!("{}: {}", error_msg, e)))
                 .unwrap()
         }
     }
 }
 
-async fn get_image_bin(State(state): State<AppState>) -> impl IntoResponse {
+async fn fetch_svg(state: &AppState) -> Result<String, Response> {
     let start = std::time::Instant::now();
-    let fetch_result = fetch_closest_flight().await;
+    let fetch_result = fetch_closest_flight(&state.client).await;
     let fetch_duration = start.elapsed();
 
     match fetch_result {
         Ok(Some(flight)) => {
-            let svg = render_svg(&flight);
-            match svg_to_epd_bin(&svg, &state.usvg_options) {
-                Ok(bin) => {
-                    info!(
-                        "Request processed (BIN): fetch={:?}, total={:?}",
-                        fetch_duration,
-                        start.elapsed()
-                    );
-                    Response::builder()
-                        .header("Content-Type", "application/octet-stream")
-                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                        .body(Body::from(bin))
-                        .unwrap()
-                }
-                Err(e) => {
-                    error!("Error rendering BIN: {}", e);
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap()
-                }
-            }
+            info!("Flight found: fetch={:?}", fetch_duration);
+            Ok(render_svg(&flight))
         }
         Ok(None) => {
-            let svg = render_no_flight_svg();
-            match svg_to_epd_bin(&svg, &state.usvg_options) {
-                Ok(bin) => Response::builder()
-                    .header("Content-Type", "application/octet-stream")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                    .body(Body::from(bin))
-                    .unwrap(),
-                Err(e) => {
-                    error!("Error rendering BIN: {}", e);
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(format!("Error: {}", e)))
-                        .unwrap()
-                }
-            }
+            info!("No flight found: fetch={:?}", fetch_duration);
+            Ok(render_no_flight_svg())
         }
         Err(e) => {
-            error!("Error fetching flight: {}", e);
-            Response::builder()
+            error!("Error fetching flight: {} (took {:?})", e, fetch_duration);
+            Err(Response::builder()
                 .status(500)
                 .body(Body::from(format!("Error: {}", e)))
-                .unwrap()
+                .unwrap())
         }
     }
 }
@@ -384,33 +266,15 @@ fn svg_to_epd_bin(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std
 }
 
 fn get_epd_color(rgb: [u8; 3]) -> u8 {
-    if rgb == [0, 0, 0] {
-        0
+    match rgb {
+        [0, 0, 0] => 0,       // BLACK
+        [255, 255, 255] => 1, // WHITE
+        [255, 255, 0] => 2,   // YELLOW
+        [255, 0, 0] => 3,     // RED
+        [0, 0, 255] => 5,     // BLUE
+        [0, 255, 0] => 6,     // GREEN
+        _ => 1,               // Default to WHITE
     }
-    // BLACK
-    else if rgb == [255, 255, 255] {
-        1
-    }
-    // WHITE
-    else if rgb == [255, 255, 0] {
-        2
-    }
-    // YELLOW
-    else if rgb == [255, 0, 0] {
-        3
-    }
-    // RED
-    else if rgb == [0, 0, 255] {
-        5
-    }
-    // BLUE
-    else if rgb == [0, 255, 0] {
-        6
-    }
-    // GREEN
-    else {
-        1
-    } // Default to WHITE
 }
 
 fn pixmap_to_epd_bin(pixmap: Pixmap) -> Vec<u8> {
@@ -574,7 +438,7 @@ fn svg_to_png(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::er
     Ok(pixmap.encode_png()?)
 }
 
-async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Error>> {
+async fn fetch_closest_flight(client: &reqwest::Client) -> Result<Option<Flight>, Box<dyn std::error::Error>> {
     let lamin = LAT - BOX_SIZE;
     let lamax = LAT + BOX_SIZE;
     let lomin = LON - BOX_SIZE;
@@ -585,7 +449,6 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
         lamin, lomin, lamax, lomax
     );
 
-    let client = reqwest::Client::new();
     info!("Fetching flights from OpenSky: {}", url);
     let resp: OpenSkyResponse = client.get(url).send().await?.json().await?;
 
@@ -634,7 +497,7 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
     flights.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
 
     if let Some(mut flight) = flights.first().cloned() {
-        if let Some(url) = fetch_photo_url(&flight.icao24).await {
+        if let Some(url) = fetch_photo_url(client, &flight.icao24).await {
             flight.photo_url = Some(url.clone());
             // Fetch the image and convert to base64 for resvg
             info!("Fetching plane photo from: {}", url);
@@ -645,14 +508,14 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
                 }
             }
         }
-        if let Some(route) = fetch_route(&flight.callsign).await {
+        if let Some(route) = fetch_route(client, &flight.callsign).await {
             flight.origin_iata = Some(route.origin.iata_code);
             flight.origin_name = Some(route.origin.municipality);
             flight.dest_iata = Some(route.destination.iata_code);
             flight.dest_name = Some(route.destination.municipality);
             flight.flight_number = route.callsign_iata;
         }
-        if let Some(aircraft) = fetch_aircraft_info(&flight.icao24).await {
+        if let Some(aircraft) = fetch_aircraft_info(client, &flight.icao24).await {
             flight.aircraft_type = Some(aircraft.aircraft_type);
         }
         Ok(Some(flight))
@@ -661,13 +524,11 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
     }
 }
 
-async fn fetch_route(callsign: &str) -> Option<AdsbdbFlightRoute> {
+async fn fetch_route(client: &reqwest::Client, callsign: &str) -> Option<AdsbdbFlightRoute> {
     let url = format!("https://api.adsbdb.com/v0/callsign/{}", callsign);
-    let client = reqwest::Client::new();
     info!("Fetching route for callsign {}: {}", callsign, url);
     let resp: AdsbdbResponse = client
         .get(url)
-        .header("User-Agent", "Radar/0.1.0")
         .send()
         .await
         .ok()?
@@ -678,13 +539,11 @@ async fn fetch_route(callsign: &str) -> Option<AdsbdbFlightRoute> {
     resp.response.flightroute
 }
 
-async fn fetch_aircraft_info(icao24: &str) -> Option<AdsbdbAircraft> {
+async fn fetch_aircraft_info(client: &reqwest::Client, icao24: &str) -> Option<AdsbdbAircraft> {
     let url = format!("https://api.adsbdb.com/v0/aircraft/{}", icao24);
-    let client = reqwest::Client::new();
     info!("Fetching aircraft info for hex {}: {}", icao24, url);
     let resp: AdsbdbResponse = client
         .get(url)
-        .header("User-Agent", "Radar/0.1.0")
         .send()
         .await
         .ok()?
@@ -695,13 +554,11 @@ async fn fetch_aircraft_info(icao24: &str) -> Option<AdsbdbAircraft> {
     resp.response.aircraft
 }
 
-async fn fetch_photo_url(icao24: &str) -> Option<String> {
+async fn fetch_photo_url(client: &reqwest::Client, icao24: &str) -> Option<String> {
     let url = format!("https://api.planespotters.net/pub/photos/hex/{}", icao24);
-    let client = reqwest::Client::new();
     info!("Fetching photo URL for hex {}: {}", icao24, url);
     let resp: PlanespottersResponse = client
         .get(url)
-        .header("User-Agent", "Radar/0.1.0")
         .send()
         .await
         .ok()?
