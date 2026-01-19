@@ -176,7 +176,7 @@ fn render_svg(flight: &Flight) -> String {
 
     let image_layer = if has_photo {
         format!(
-            r#"<image id="bg" href="{}" width="1600" height="1200" preserveAspectRatio="xMidYMid slice" />"#,
+            r#"<image id="bg" href="{}" width="1600" height="1200" preserveAspectRatio="xMidYMid meet" />"#,
             photo_url
         )
     } else {
