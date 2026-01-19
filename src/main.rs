@@ -57,9 +57,6 @@ struct PlanespottersImage {
 struct Flight {
     icao24: String,
     callsign: String,
-    _origin_country: String,
-    _longitude: f64,
-    _latitude: f64,
     altitude: Option<f64>,
     distance: f64,
     photo_url: Option<String>,
@@ -139,7 +136,6 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
     for state in states {
         let icao24 = state[0].as_str().unwrap_or_default().to_string();
         let callsign = state[1].as_str().unwrap_or_default().trim().to_string();
-        let origin_country = state[2].as_str().unwrap_or_default().to_string();
         let longitude = state[5].as_f64();
         let latitude = state[6].as_f64();
         let altitude = state[7].as_f64();
@@ -149,9 +145,6 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
             flights.push(Flight {
                 icao24,
                 callsign,
-                _origin_country: origin_country,
-                _longitude: lon,
-                _latitude: lat,
                 altitude,
                 distance,
                 photo_url: None,
@@ -328,9 +321,6 @@ mod tests {
         let flight = Flight {
             icao24: "test".to_string(),
             callsign: "TEST123".to_string(),
-            _origin_country: "Testland".to_string(),
-            _longitude: 0.0,
-            _latitude: 0.0,
             altitude: Some(10000.0),
             distance: 0.1,
             photo_url: Some("http://example.com/photo.jpg".to_string()),
