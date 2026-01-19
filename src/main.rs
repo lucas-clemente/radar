@@ -20,6 +20,8 @@ struct AppState {
     usvg_options: Arc<usvg::Options<'static>>,
 }
 
+const FONT_DATA: &[u8] = include_bytes!("../GoogleSans-VariableFont_GRAD,opsz,wght.ttf");
+
 const PALETTE: [[u8; 3]; 6] = [
     [0, 0, 0],       // Black
     [255, 255, 255], // White
@@ -100,7 +102,7 @@ async fn main() {
         .init();
 
     let mut fontdb = fontdb::Database::new();
-    fontdb.load_system_fonts();
+    fontdb.load_font_data(FONT_DATA.to_vec());
     let mut usvg_options = usvg::Options::default();
     usvg_options.fontdb = Arc::new(fontdb);
 
@@ -516,17 +518,17 @@ fn render_svg(flight: &Flight) -> String {
   <g transform='translate(0, 100)'>
     <!-- Origin -->
     <g transform='translate(400, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{origin_iata}</text>
-      <text x='0' y='45' font-family='sans-serif' font-size='35' text-anchor='middle' fill='#000000'>{origin_name}</text>
+      <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{origin_iata}</text>
+      <text x='0' y='45' font-family='Google Sans, sans-serif' font-size='35' text-anchor='middle' fill='#000000'>{origin_name}</text>
     </g>
 
     <!-- Arrow -->
-    <text x='800' y='0' font-family='sans-serif' font-size='80' text-anchor='middle' fill='#000000' font-weight='bold'>→</text>
+    <text x='800' y='0' font-family='Google Sans, sans-serif' font-size='80' text-anchor='middle' fill='#000000' font-weight='bold'>→</text>
 
     <!-- Destination -->
     <g transform='translate(1200, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{dest_iata}</text>
-      <text x='0' y='45' font-family='sans-serif' font-size='35' text-anchor='middle' fill='#000000'>{dest_name}</text>
+      <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{dest_iata}</text>
+      <text x='0' y='45' font-family='Google Sans, sans-serif' font-size='35' text-anchor='middle' fill='#000000'>{dest_name}</text>
     </g>
   </g>
 
@@ -534,14 +536,14 @@ fn render_svg(flight: &Flight) -> String {
   <g transform='translate(0, 1040)'>
     <!-- Callsign -->
     <g transform='translate(400, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>CALLSIGN</text>
-      <text x='0' y='85' font-family='sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{callsign}</text>
+      <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>CALLSIGN</text>
+      <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{callsign}</text>
     </g>
 
     <!-- Altitude -->
     <g transform='translate(1200, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>ALTITUDE</text>
-      <text x='0' y='85' font-family='sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{alt}</text>
+      <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>ALTITUDE</text>
+      <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{alt}</text>
     </g>
   </g>
 </svg>"#,
@@ -590,10 +592,9 @@ mod tests {
 
 fn render_no_flight_svg() -> String {
     r#"<svg width='1600' height='1200' viewBox='0 0 1600 1200' xmlns='http://www.w3.org/2000/svg'>
-
   <rect width='1600' height='1200' fill='white' />
 
-  <text x='800' y='600' font-family='sans-serif' font-size='100' text-anchor='middle' fill='#7f8c8d'>No flights overhead</text>
+  <text x='800' y='600' font-family='Google Sans, sans-serif' font-size='100' text-anchor='middle' fill='#7f8c8d'>No flights overhead</text>
 
 </svg>"#.to_string()
 }
