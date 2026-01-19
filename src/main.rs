@@ -253,10 +253,10 @@ fn render_svg(flight: &Flight) -> String {
       <feGaussianBlur stdDeviation='15' />
     </filter>
     <clipPath id='topBoxClip'>
-      <rect x='100' y='50' width='1400' height='150' rx='30' />
+      <rect x='100' y='20' width='1400' height='150' rx='30' />
     </clipPath>
     <clipPath id='bottomBoxClip'>
-      <rect x='100' y='920' width='1400' height='230' rx='30' />
+      <rect x='100' y='950' width='1400' height='230' rx='30' />
     </clipPath>
   </defs>
 
@@ -265,11 +265,11 @@ fn render_svg(flight: &Flight) -> String {
   {blur_layer}
 
   <!-- Glass Overlay Boxes -->
-  <rect x='100' y='50' width='1400' height='150' rx='30' fill='white' fill-opacity='0.4' />
-  <rect x='100' y='920' width='1400' height='230' rx='30' fill='white' fill-opacity='0.4' />
+  <rect x='100' y='20' width='1400' height='150' rx='30' fill='white' fill-opacity='0.4' />
+  <rect x='100' y='950' width='1400' height='230' rx='30' fill='white' fill-opacity='0.4' />
 
   <!-- Route (Top) -->
-  <g transform='translate(0, 130)'>
+  <g transform='translate(0, 100)'>
     <!-- Origin -->
     <g transform='translate(400, 0)'>
       <text x='0' y='0' font-family='sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{origin_iata}</text>
@@ -287,7 +287,7 @@ fn render_svg(flight: &Flight) -> String {
   </g>
 
   <!-- Info Row (Bottom) -->
-  <g transform='translate(0, 1010)'>
+  <g transform='translate(0, 1040)'>
     <!-- Callsign -->
     <g transform='translate(400, 0)'>
       <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>CALLSIGN</text>
