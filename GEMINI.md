@@ -6,7 +6,7 @@ Backend for an ESPHome-driven e-paper display (Spectra 6) showing real-time flig
 
 - **Language:** Rust (Axum web framework).
 - **Flight Data:** Fetches the closest aircraft within a ~50km box via [OpenSky Network](https://openskynetwork.github.io/opensky-api/rest.html).
-- **Metadata:** Retrieves flight routes (origin/destination) from [adsbdb.com](https://api.adsbdb.com) and aircraft photos from [planespotters.net](https://www.planespotters.net/photo/api).
+- **Metadata:** Retrieves flight routes (origin/destination) and aircraft type from [adsbdb.com](https://api.adsbdb.com) and aircraft photos from [planespotters.net](https://www.planespotters.net/photo/api).
 - **Rendering:** 
     - Generates dynamic SVGs representing flight info and aircraft imagery.
     - Uses `usvg`/`resvg` for SVG-to-raster conversion.

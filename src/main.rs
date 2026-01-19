@@ -48,6 +48,13 @@ struct AdsbdbResponse {
 #[derive(Debug, Deserialize)]
 struct AdsbdbData {
     flightroute: Option<AdsbdbFlightRoute>,
+    aircraft: Option<AdsbdbAircraft>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdsbdbAircraft {
+    #[serde(rename = "type")]
+    aircraft_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,7 +88,7 @@ struct PlanespottersImage {
 struct Flight {
     icao24: String,
     callsign: String,
-    altitude: Option<f64>,
+    aircraft_type: Option<String>,
     distance: f64,
     photo_url: Option<String>,
     photo_base64: Option<String>,
@@ -397,14 +404,13 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
         let callsign = state[1].as_str().unwrap_or_default().trim().to_string();
         let longitude = state[5].as_f64();
         let latitude = state[6].as_f64();
-        let altitude = state[7].as_f64();
 
         if let (Some(lat), Some(lon)) = (latitude, longitude) {
             let distance = ((lat - LAT).powi(2) + (lon - LON).powi(2)).sqrt();
             flights.push(Flight {
                 icao24,
                 callsign,
-                altitude,
+                aircraft_type: None,
                 distance,
                 photo_url: None,
                 photo_base64: None,
@@ -436,6 +442,9 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
             flight.dest_iata = Some(route.destination.iata_code);
             flight.dest_name = Some(route.destination.municipality);
         }
+        if let Some(aircraft) = fetch_aircraft_info(&flight.icao24).await {
+            flight.aircraft_type = Some(aircraft.aircraft_type);
+        }
         Ok(Some(flight))
     } else {
         Ok(None)
@@ -457,6 +466,23 @@ async fn fetch_route(callsign: &str) -> Option<AdsbdbFlightRoute> {
         .ok()?;
 
     resp.response.flightroute
+}
+
+async fn fetch_aircraft_info(icao24: &str) -> Option<AdsbdbAircraft> {
+    let url = format!("https://api.adsbdb.com/v0/aircraft/{}", icao24);
+    let client = reqwest::Client::new();
+    info!("Fetching aircraft info for hex {}: {}", icao24, url);
+    let resp: AdsbdbResponse = client
+        .get(url)
+        .header("User-Agent", "Radar/0.1.0")
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    resp.response.aircraft
 }
 
 async fn fetch_photo_url(icao24: &str) -> Option<String> {
@@ -483,10 +509,7 @@ fn render_svg(flight: &Flight) -> String {
         &flight.callsign
     };
 
-    let alt = flight
-        .altitude
-        .map(|a| format!("{:.0} ft", a * 3.28084))
-        .unwrap_or_else(|| "N/A".to_string());
+    let aircraft_type = flight.aircraft_type.as_deref().unwrap_or("Unknown");
 
     let origin_iata = flight.origin_iata.as_deref().unwrap_or("???");
     let origin_name = flight.origin_name.as_deref().unwrap_or("Unknown Origin");
@@ -540,10 +563,10 @@ fn render_svg(flight: &Flight) -> String {
       <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{callsign}</text>
     </g>
 
-    <!-- Altitude -->
+    <!-- Aircraft Type -->
     <g transform='translate(1200, 0)'>
-      <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>ALTITUDE</text>
-      <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{alt}</text>
+      <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>AIRCRAFT TYPE</text>
+      <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{aircraft_type}</text>
     </g>
   </g>
 </svg>"#,
@@ -553,7 +576,7 @@ fn render_svg(flight: &Flight) -> String {
         dest_iata = dest_iata,
         dest_name = dest_name,
         callsign = callsign,
-        alt = alt
+        aircraft_type = aircraft_type
     )
 }
 
@@ -566,7 +589,7 @@ mod tests {
         let flight = Flight {
             icao24: "test".to_string(),
             callsign: "TEST123".to_string(),
-            altitude: Some(10000.0),
+            aircraft_type: Some("Airbus A320".to_string()),
             distance: 0.1,
             photo_url: Some("http://example.com/photo.jpg".to_string()),
             photo_base64: Some("data:image/jpeg;base64,VEVTVA==".to_string()),
@@ -579,7 +602,7 @@ mod tests {
         assert!(svg.contains("TEST123"));
         assert!(svg.contains("WAW"));
         assert!(svg.contains("ZRH"));
-        assert!(svg.contains("32808 ft"));
+        assert!(svg.contains("Airbus A320"));
         assert!(svg.contains("data:image/jpeg;base64,VEVTVA=="));
     }
 
@@ -589,6 +612,7 @@ mod tests {
         assert!(svg.contains("No flights overhead"));
     }
 }
+
 
 fn render_no_flight_svg() -> String {
     r#"<svg width='1600' height='1200' viewBox='0 0 1600 1200' xmlns='http://www.w3.org/2000/svg'>
