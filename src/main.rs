@@ -122,6 +122,7 @@ async fn main() {
         .route("/image.svg", get(get_image))
         .route("/image.png", get(get_image_png))
         .route("/image_dithered.png", get(get_image_dithered_png))
+        .route("/image.bin", get(get_image_bin))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -133,7 +134,7 @@ async fn main() {
 }
 
 async fn index() -> Html<&'static str> {
-    Html("<h1>Radar</h1><ul><li><a href='/image.svg'>/image.svg</a></li><li><a href='/image.png'>/image.png</a></li><li><a href='/image_dithered.png'>/image_dithered.png</a></li></ul>")
+    Html("<h1>Radar</h1><ul><li><a href='/image.svg'>/image.svg</a></li><li><a href='/image.png'>/image.png</a></li><li><a href='/image_dithered.png'>/image_dithered.png</a></li><li><a href='/image.bin'>/image.bin</a></li></ul>")
 }
 
 async fn get_image(_state: State<AppState>) -> impl IntoResponse {
@@ -280,6 +281,120 @@ async fn get_image_dithered_png(State(state): State<AppState>) -> impl IntoRespo
             Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
         }
     }
+}
+
+async fn get_image_bin(State(state): State<AppState>) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let fetch_result = fetch_closest_flight().await;
+    let fetch_duration = start.elapsed();
+
+    match fetch_result {
+        Ok(Some(flight)) => {
+            let svg = render_svg(&flight);
+            match svg_to_epd_bin(&svg, &state.usvg_options) {
+                Ok(bin) => {
+                    info!("Request processed (BIN): fetch={:?}, total={:?}", fetch_duration, start.elapsed());
+                    Response::builder()
+                        .header("Content-Type", "application/octet-stream")
+                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                        .body(Body::from(bin))
+                        .unwrap()
+                },
+                Err(e) => {
+                    error!("Error rendering BIN: {}", e);
+                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                }
+            }
+        }
+        Ok(None) => {
+            let svg = render_no_flight_svg();
+            match svg_to_epd_bin(&svg, &state.usvg_options) {
+                Ok(bin) => {
+                    Response::builder()
+                        .header("Content-Type", "application/octet-stream")
+                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                        .body(Body::from(bin))
+                        .unwrap()
+                },
+                Err(e) => {
+                    error!("Error rendering BIN: {}", e);
+                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                }
+            }
+        }
+        Err(e) => {
+            error!("Error fetching flight: {}", e);
+            Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+        }
+    }
+}
+
+fn svg_to_epd_bin(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let tree = Tree::from_str(svg, opt)?;
+    let pixmap_size = tree.size();
+    let mut pixmap = Pixmap::new(pixmap_size.width() as u32, pixmap_size.height() as u32).unwrap();
+    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+    let dithered = apply_floyd_steinberg(pixmap);
+    Ok(pixmap_to_epd_bin(dithered))
+}
+
+fn get_epd_color(rgb: [u8; 3]) -> u8 {
+    if rgb == [0, 0, 0] { 0 }       // BLACK
+    else if rgb == [255, 255, 255] { 1 } // WHITE
+    else if rgb == [255, 255, 0] { 2 }   // YELLOW
+    else if rgb == [255, 0, 0] { 3 }     // RED
+    else if rgb == [0, 0, 255] { 5 }     // BLUE
+    else if rgb == [0, 255, 0] { 6 }     // GREEN
+    else { 1 } // Default to WHITE
+}
+
+fn pixmap_to_epd_bin(pixmap: Pixmap) -> Vec<u8> {
+    let src_w = pixmap.width() as usize;
+    let src_h = pixmap.height() as usize;
+
+    // The EPD is 1200x1600 total, split into two 600x1600 vertical strips.
+    const TARGET_W: usize = 1200;
+    const TARGET_H: usize = 1600;
+    const HALF_W: usize = TARGET_W / 2;
+
+    let mut buffer = vec![0u8; TARGET_W * TARGET_H / 2];
+    let half_buffer_len = buffer.len() / 2;
+
+    let pixels = pixmap.pixels();
+
+    for y_new in 0..TARGET_H {
+        for x_new in 0..TARGET_W {
+            // Rotate 90 degrees clockwise to fit 1600x1200 landscape into 1200x1600 portrait
+            // x_new = (src_h - 1) - y_old  => y_old = (src_h - 1) - x_new
+            // y_new = x_old               => x_old = y_new
+            let x_old = y_new;
+            let y_old = (src_h - 1).saturating_sub(x_new);
+
+            if x_old < src_w && y_old < src_h {
+                let p_idx = y_old * src_w + x_old;
+                let p = pixels[p_idx].demultiply();
+                let color = get_epd_color([p.red(), p.green(), p.blue()]);
+
+                let (tx, offset) = if x_new < HALF_W {
+                    (x_new, 0)
+                } else {
+                    (x_new - HALF_W, half_buffer_len)
+                };
+
+                let pixel_idx = tx + y_new * HALF_W;
+                let byte_pos = offset + pixel_idx / 2;
+
+                if (pixel_idx & 1) == 0 {
+                    buffer[byte_pos] |= color << 4;
+                } else {
+                    buffer[byte_pos] |= color;
+                }
+            }
+        }
+    }
+
+    buffer
 }
 
 fn svg_to_dithered_png(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
