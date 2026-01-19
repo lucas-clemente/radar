@@ -361,40 +361,14 @@ fn render_svg(flight: &Flight) -> String {
         "".to_string()
     };
 
-    let blur_layer = if has_photo {
-        r#"
-  <g clip-path='url(#topBoxClip)'>
-    <use href='#bg' filter='url(#blurEffect)' />
-  </g>
-  <g clip-path='url(#bottomBoxClip)'>
-    <use href='#bg' filter='url(#blurEffect)' />
-  </g>"#
-            .to_string()
-    } else {
-        "".to_string()
-    };
-
     format!(
         r#"<svg width='1600' height='1200' viewBox='0 0 1600 1200' xmlns='http://www.w3.org/2000/svg'>
-  <defs>
-    <filter id='blurEffect'>
-      <feGaussianBlur stdDeviation='15' />
-    </filter>
-    <clipPath id='topBoxClip'>
-      <rect x='100' y='20' width='1400' height='150' rx='30' />
-    </clipPath>
-    <clipPath id='bottomBoxClip'>
-      <rect x='100' y='950' width='1400' height='230' rx='30' />
-    </clipPath>
-  </defs>
-
   <rect width='1600' height='1200' fill='white' />
   {image_layer}
-  {blur_layer}
 
-  <!-- Glass Overlay Boxes -->
-  <rect x='100' y='20' width='1400' height='150' rx='30' fill='white' fill-opacity='0.4' />
-  <rect x='100' y='950' width='1400' height='230' rx='30' fill='white' fill-opacity='0.4' />
+  <!-- Overlay Boxes -->
+  <rect x='100' y='20' width='1400' height='150' rx='30' fill='white' fill-opacity='0.8' />
+  <rect x='100' y='950' width='1400' height='230' rx='30' fill='white' fill-opacity='0.8' />
 
   <!-- Route (Top) -->
   <g transform='translate(0, 100)'>
@@ -430,7 +404,6 @@ fn render_svg(flight: &Flight) -> String {
   </g>
 </svg>"#,
         image_layer = image_layer,
-        blur_layer = blur_layer,
         origin_iata = origin_iata,
         origin_name = origin_name,
         dest_iata = dest_iata,
