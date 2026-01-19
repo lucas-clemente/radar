@@ -17,6 +17,28 @@ struct OpenSkyResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct AdsbdbResponse {
+    response: AdsbdbData,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdsbdbData {
+    flightroute: Option<AdsbdbFlightRoute>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdsbdbFlightRoute {
+    origin: AdsbdbAirport,
+    destination: AdsbdbAirport,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdsbdbAirport {
+    iata_code: String,
+    municipality: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct PlanespottersResponse {
     photos: Vec<PlanespottersPhoto>,
 }
@@ -35,12 +57,16 @@ struct PlanespottersImage {
 struct Flight {
     icao24: String,
     callsign: String,
-    origin_country: String,
+    _origin_country: String,
     _longitude: f64,
     _latitude: f64,
     altitude: Option<f64>,
     distance: f64,
     photo_url: Option<String>,
+    origin_iata: Option<String>,
+    origin_name: Option<String>,
+    dest_iata: Option<String>,
+    dest_name: Option<String>,
 }
 
 #[tokio::main]
@@ -123,12 +149,16 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
             flights.push(Flight {
                 icao24,
                 callsign,
-                origin_country,
+                _origin_country: origin_country,
                 _longitude: lon,
                 _latitude: lat,
                 altitude,
                 distance,
                 photo_url: None,
+                origin_iata: None,
+                origin_name: None,
+                dest_iata: None,
+                dest_name: None,
             });
         }
     }
@@ -137,10 +167,32 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
 
     if let Some(mut flight) = flights.first().cloned() {
         flight.photo_url = fetch_photo_url(&flight.icao24).await;
+        if let Some(route) = fetch_route(&flight.callsign).await {
+            flight.origin_iata = Some(route.origin.iata_code);
+            flight.origin_name = Some(route.origin.municipality);
+            flight.dest_iata = Some(route.destination.iata_code);
+            flight.dest_name = Some(route.destination.municipality);
+        }
         Ok(Some(flight))
     } else {
         Ok(None)
     }
+}
+
+async fn fetch_route(callsign: &str) -> Option<AdsbdbFlightRoute> {
+    let url = format!("https://api.adsbdb.com/v0/callsign/{}", callsign);
+    let client = reqwest::Client::new();
+    let resp: AdsbdbResponse = client
+        .get(url)
+        .header("User-Agent", "Radar/0.1.0")
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    resp.response.flightroute
 }
 
 async fn fetch_photo_url(icao24: &str) -> Option<String> {
@@ -170,6 +222,11 @@ fn render_svg(flight: &Flight) -> String {
         .altitude
         .map(|a| format!("{:.0} ft", a * 3.28084))
         .unwrap_or_else(|| "N/A".to_string());
+
+    let origin_iata = flight.origin_iata.as_deref().unwrap_or("???");
+    let origin_name = flight.origin_name.as_deref().unwrap_or("Unknown Origin");
+    let dest_iata = flight.dest_iata.as_deref().unwrap_or("???");
+    let dest_name = flight.dest_name.as_deref().unwrap_or("Unknown Destination");
 
     let photo_url = flight.photo_url.as_deref().unwrap_or("");
     let has_photo = !photo_url.is_empty();
@@ -218,30 +275,46 @@ fn render_svg(flight: &Flight) -> String {
   <rect x='100' y='50' width='1400' height='150' rx='30' fill='white' fill-opacity='0.4' />
   <rect x='100' y='920' width='1400' height='230' rx='30' fill='white' fill-opacity='0.4' />
 
-  <!-- Callsign (Top) -->
-  <g transform='translate(800, 155)'>
-    <text x='0' y='0' font-family='sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{callsign}</text>
+  <!-- Route (Top) -->
+  <g transform='translate(0, 130)'>
+    <!-- Origin -->
+    <g transform='translate(400, 0)'>
+      <text x='0' y='0' font-family='sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{origin_iata}</text>
+      <text x='0' y='45' font-family='sans-serif' font-size='35' text-anchor='middle' fill='#000000'>{origin_name}</text>
+    </g>
+
+    <!-- Arrow -->
+    <text x='800' y='0' font-family='sans-serif' font-size='80' text-anchor='middle' fill='#000000' font-weight='bold'>→</text>
+
+    <!-- Destination -->
+    <g transform='translate(1200, 0)'>
+      <text x='0' y='0' font-family='sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{dest_iata}</text>
+      <text x='0' y='45' font-family='sans-serif' font-size='35' text-anchor='middle' fill='#000000'>{dest_name}</text>
+    </g>
   </g>
 
   <!-- Info Row (Bottom) -->
-  <g transform='translate(0, 1000)'>
-    <!-- Country -->
+  <g transform='translate(0, 1010)'>
+    <!-- Callsign -->
     <g transform='translate(400, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>ORIGIN</text>
-      <text x='0' y='80' font-family='sans-serif' font-size='70' text-anchor='middle' fill='#000000' font-weight='bold'>{origin_country}</text>
+      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>CALLSIGN</text>
+      <text x='0' y='85' font-family='sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{callsign}</text>
     </g>
 
     <!-- Altitude -->
     <g transform='translate(1200, 0)'>
       <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>ALTITUDE</text>
-      <text x='0' y='80' font-family='sans-serif' font-size='70' text-anchor='middle' fill='#000000' font-weight='bold'>{alt}</text>
+      <text x='0' y='85' font-family='sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{alt}</text>
     </g>
   </g>
 </svg>"#,
         image_layer = image_layer,
         blur_layer = blur_layer,
+        origin_iata = origin_iata,
+        origin_name = origin_name,
+        dest_iata = dest_iata,
+        dest_name = dest_name,
         callsign = callsign,
-        origin_country = flight.origin_country,
         alt = alt
     )
 }
@@ -255,19 +328,23 @@ mod tests {
         let flight = Flight {
             icao24: "test".to_string(),
             callsign: "TEST123".to_string(),
-            origin_country: "Testland".to_string(),
+            _origin_country: "Testland".to_string(),
             _longitude: 0.0,
             _latitude: 0.0,
             altitude: Some(10000.0),
             distance: 0.1,
             photo_url: Some("http://example.com/photo.jpg".to_string()),
+            origin_iata: Some("WAW".to_string()),
+            origin_name: Some("Warsaw".to_string()),
+            dest_iata: Some("ZRH".to_string()),
+            dest_name: Some("Zurich".to_string()),
         };
         let svg = render_svg(&flight);
         assert!(svg.contains("TEST123"));
-        assert!(svg.contains("Testland"));
-        assert!(svg.contains("32808 ft")); // 10000 * 3.28084
+        assert!(svg.contains("WAW"));
+        assert!(svg.contains("ZRH"));
+        assert!(svg.contains("32808 ft"));
         assert!(svg.contains("http://example.com/photo.jpg"));
-        assert!(!svg.contains("900 km/h")); // Speed should be gone
     }
 
     #[test]
