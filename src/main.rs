@@ -33,8 +33,9 @@ const PALETTE: [[u8; 3]; 6] = [
 
 const LAT: f64 = 47.41876326848794;
 const LON: f64 = 8.426291132310645;
-const BOX_SIZE: f64 = 0.1; // Roughly 10km
+const BOX_SIZE: f64 = 0.15; // Increased to ensure we cover 8km radius
 const MAX_ALTITUDE_METERS: f64 = 6096.0; // 20,000 feet
+const MAX_DISTANCE_KM: f64 = 8.0;
 
 #[derive(Debug, Deserialize)]
 struct OpenSkyResponse {
@@ -99,6 +100,16 @@ struct Flight {
     origin_name: Option<String>,
     dest_iata: Option<String>,
     dest_name: Option<String>,
+}
+
+fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let r = 6371.0; // Earth's radius in km
+    let d_lat = (lat2 - lat1).to_radians();
+    let d_lon = (lon2 - lon1).to_radians();
+    let a = (d_lat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (d_lon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    r * c
 }
 
 #[tokio::main]
@@ -599,7 +610,11 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
                 }
             }
 
-            let distance = ((lat - LAT).powi(2) + (lon - LON).powi(2)).sqrt();
+            let distance = haversine_distance(LAT, LON, lat, lon);
+            if distance > MAX_DISTANCE_KM {
+                continue;
+            }
+
             flights.push(Flight {
                 icao24,
                 callsign,
@@ -788,13 +803,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_haversine_distance() {
+        // Distance between two points in Zurich
+        let lat1 = 47.3769;
+        let lon1 = 8.5417;
+        let lat2 = 47.3780;
+        let lon2 = 8.5400;
+        let dist = haversine_distance(lat1, lon1, lat2, lon2);
+        // Approx 0.17 km
+        assert!(dist > 0.1 && dist < 0.3);
+    }
+
+    #[test]
     fn test_render_svg() {
         let flight = Flight {
             icao24: "test".to_string(),
             callsign: "TEST123".to_string(),
             flight_number: Some("LX123".to_string()),
             aircraft_type: Some("Airbus A320".to_string()),
-            distance: 0.1,
+            distance: 5.0,
             photo_url: Some("http://example.com/photo.jpg".to_string()),
             photo_base64: Some("data:image/jpeg;base64,VEVTVA==".to_string()),
             origin_iata: Some("WAW".to_string()),
