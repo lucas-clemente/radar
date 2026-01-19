@@ -20,6 +20,15 @@ struct AppState {
     usvg_options: Arc<usvg::Options<'static>>,
 }
 
+const PALETTE: [[u8; 3]; 6] = [
+    [0, 0, 0],       // Black
+    [255, 255, 255], // White
+    [255, 255, 0],   // Yellow
+    [255, 0, 0],     // Red
+    [0, 0, 255],     // Blue
+    [0, 255, 0],     // Green
+];
+
 const LAT: f64 = 47.4197;
 const LON: f64 = 8.4344;
 const BOX_SIZE: f64 = 0.5; // Roughly 50km
@@ -103,6 +112,7 @@ async fn main() {
         .route("/", get(index))
         .route("/image.svg", get(get_image))
         .route("/image.png", get(get_image_png))
+        .route("/image_dithered.png", get(get_image_dithered_png))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -114,7 +124,7 @@ async fn main() {
 }
 
 async fn index() -> Html<&'static str> {
-    Html("<h1>Radar</h1><p>Go to <a href='/image.svg'>/image.svg</a></p>")
+    Html("<h1>Radar</h1><ul><li><a href='/image.svg'>/image.svg</a></li><li><a href='/image.png'>/image.png</a></li><li><a href='/image_dithered.png'>/image_dithered.png</a></li></ul>")
 }
 
 async fn get_image(_state: State<AppState>) -> impl IntoResponse {
@@ -215,6 +225,138 @@ async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
                 .unwrap()
         }
     }
+}
+
+async fn get_image_dithered_png(State(state): State<AppState>) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let fetch_result = fetch_closest_flight().await;
+    let fetch_duration = start.elapsed();
+
+    match fetch_result {
+        Ok(Some(flight)) => {
+            let svg = render_svg(&flight);
+            match svg_to_dithered_png(&svg, &state.usvg_options) {
+                Ok(png) => {
+                    info!("Request processed (Dithered PNG): fetch={:?}, total={:?}", fetch_duration, start.elapsed());
+                    Response::builder()
+                        .header("Content-Type", "image/png")
+                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                        .body(Body::from(png))
+                        .unwrap()
+                },
+                Err(e) => {
+                    error!("Error rendering dithered PNG: {}", e);
+                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                }
+            }
+        }
+        Ok(None) => {
+            let svg = render_no_flight_svg();
+            match svg_to_dithered_png(&svg, &state.usvg_options) {
+                Ok(png) => {
+                    Response::builder()
+                        .header("Content-Type", "image/png")
+                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                        .body(Body::from(png))
+                        .unwrap()
+                },
+                Err(e) => {
+                    error!("Error rendering dithered PNG: {}", e);
+                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                }
+            }
+        }
+        Err(e) => {
+            error!("Error fetching flight: {}", e);
+            Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+        }
+    }
+}
+
+fn svg_to_dithered_png(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let tree = Tree::from_str(svg, opt)?;
+    let pixmap_size = tree.size();
+    let mut pixmap = Pixmap::new(pixmap_size.width() as u32, pixmap_size.height() as u32).unwrap();
+    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+    let dithered = apply_floyd_steinberg(pixmap);
+    Ok(dithered.encode_png()?)
+}
+
+fn apply_floyd_steinberg(pixmap: Pixmap) -> Pixmap {
+    let width = pixmap.width() as usize;
+    let height = pixmap.height() as usize;
+    let mut data = vec![[0.0f32; 3]; width * height];
+    
+    // Convert to f32 for dithering
+    for (i, pixel) in pixmap.pixels().iter().enumerate() {
+        data[i] = [
+            pixel.red() as f32,
+            pixel.green() as f32,
+            pixel.blue() as f32,
+        ];
+    }
+
+    for y in 0..height {
+        for x in 0..width {
+            let old_rgb = data[y * width + x];
+            let new_rgb = find_closest_color(old_rgb);
+            data[y * width + x] = [new_rgb[0] as f32, new_rgb[1] as f32, new_rgb[2] as f32];
+
+            let err = [
+                old_rgb[0] - new_rgb[0] as f32,
+                old_rgb[1] - new_rgb[1] as f32,
+                old_rgb[2] - new_rgb[2] as f32,
+            ];
+
+            // Distribute error
+            if x + 1 < width {
+                distribute_error(&mut data[y * width + x + 1], err, 7.0 / 16.0);
+            }
+            if y + 1 < height {
+                if x > 0 {
+                    distribute_error(&mut data[(y + 1) * width + x - 1], err, 3.0 / 16.0);
+                }
+                distribute_error(&mut data[(y + 1) * width + x], err, 5.0 / 16.0);
+                if x + 1 < width {
+                    distribute_error(&mut data[(y + 1) * width + x + 1], err, 1.0 / 16.0);
+                }
+            }
+        }
+    }
+
+    let mut out_pixmap = Pixmap::new(width as u32, height as u32).unwrap();
+    let out_pixels = out_pixmap.pixels_mut();
+    for (i, rgb) in data.iter().enumerate() {
+        let r = rgb[0].clamp(0.0, 255.0) as u8;
+        let g = rgb[1].clamp(0.0, 255.0) as u8;
+        let b = rgb[2].clamp(0.0, 255.0) as u8;
+        out_pixels[i] = tiny_skia::ColorU8::from_rgba(r, g, b, 255).premultiply();
+    }
+
+    out_pixmap
+}
+
+fn find_closest_color(rgb: [f32; 3]) -> [u8; 3] {
+    let mut min_dist = f32::MAX;
+    let mut closest = PALETTE[0];
+
+    for color in PALETTE {
+        let dist = (rgb[0] - color[0] as f32).powi(2)
+            + (rgb[1] - color[1] as f32).powi(2)
+            + (rgb[2] - color[2] as f32).powi(2);
+        if dist < min_dist {
+            min_dist = dist;
+            closest = color;
+        }
+    }
+    closest
+}
+
+fn distribute_error(pixel: &mut [f32; 3], err: [f32; 3], factor: f32) {
+    pixel[0] += err[0] * factor;
+    pixel[1] += err[1] * factor;
+    pixel[2] += err[2] * factor;
 }
 
 fn svg_to_png(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::error::Error>> {

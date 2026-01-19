@@ -1,17 +1,20 @@
-# Description
+# Radar
 
-`Radar` is the backend for a for-fun esphome project: An epaper display mounted in my living room that shows the flight currently passing overhead for my two small kids.
+Backend for an ESPHome-driven e-paper display (Spectra 6) showing real-time flight data for aircraft passing over Weiningen ZH, CH (47.4197° N, 8.4344° E).
 
-This backend runs a webserver that renders a 1600x1200 image for the Spectra 6 EPD to display. It exposes an /image.svg endpoint that shows the content to be displayed.
+## Architecture
 
-# Architecture
+- **Language:** Rust (Axum web framework).
+- **Flight Data:** Fetches the closest aircraft within a ~50km box via [OpenSky Network](https://openskynetwork.github.io/opensky-api/rest.html).
+- **Metadata:** Retrieves flight routes (origin/destination) from [adsbdb.com](https://api.adsbdb.com) and aircraft photos from [planespotters.net](https://www.planespotters.net/photo/api).
+- **Rendering:** 
+    - Generates dynamic SVGs representing flight info and aircraft imagery.
+    - Uses `usvg`/`resvg` for SVG-to-raster conversion.
+    - `tiny-skia` for pixel-level operations.
 
-- Implemented in rust
-- Uses [OpenSky](https://openskynetwork.github.io/opensky-api/rest.html) to show the closest flight, centered around Weiningen ZH, CH (47.4197° N, 8.4344° E).
-- Displays the plane's information in an SVG.
-- Uses [planespotters.net](https://www.planespotters.net/photo/api) to retrieve an image of the plane.
-- Exposes an `/image.png` endpoint that renders the SVG to a PNG using `resvg` and `tiny-skia`.
-- To enable PNG rendering of external images, plane photos are fetched by the backend and embedded directly into the SVG as base64 data URIs.
-- Performance: System fonts are loaded once into a shared `fontdb` at startup to ensure fast PNG rendering.
-- Uses adsbdb.com to retrieve the flight origin and destination data
+## Endpoints
 
+- `/`: Simple HTML index with endpoint links.
+- `/image.svg`: Returns the raw SVG representation.
+- `/image.png`: Returns a 1600x1200 high-color PNG.
+- `/image_dithered.png`: Returns a 1600x1200 PNG optimized for the Spectra 6 EPD using Floyd-Steinberg dithering against a fixed 6-color palette (Black, White, Yellow, Red, Blue, Green).
