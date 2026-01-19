@@ -1,19 +1,19 @@
 use axum::{
     Router,
-    response::{Html, IntoResponse, Response},
-    routing::get,
     body::Body,
     extract::State,
+    response::{Html, IntoResponse, Response},
+    routing::get,
 };
-use tower_http::trace::TraceLayer;
+use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{error, info};
-use usvg::{fontdb, Tree};
 use tiny_skia::Pixmap;
-use base64::{engine::general_purpose, Engine as _};
+use tower_http::trace::TraceLayer;
+use tracing::{error, info};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use usvg::{Tree, fontdb};
 
 #[derive(Clone)]
 struct AppState {
@@ -62,6 +62,7 @@ struct AdsbdbAircraft {
 struct AdsbdbFlightRoute {
     origin: AdsbdbAirport,
     destination: AdsbdbAirport,
+    callsign_iata: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +90,7 @@ struct PlanespottersImage {
 struct Flight {
     icao24: String,
     callsign: String,
+    flight_number: Option<String>,
     aircraft_type: Option<String>,
     distance: f64,
     photo_url: Option<String>,
@@ -135,7 +137,9 @@ async fn main() {
 }
 
 async fn index() -> Html<&'static str> {
-    Html("<h1>Radar</h1><ul><li><a href='/image.svg'>/image.svg</a></li><li><a href='/image.png'>/image.png</a></li><li><a href='/image_dithered.png'>/image_dithered.png</a></li><li><a href='/image.bin'>/image.bin</a></li></ul>")
+    Html(
+        "<h1>Radar</h1><ul><li><a href='/image.svg'>/image.svg</a></li><li><a href='/image.png'>/image.png</a></li><li><a href='/image_dithered.png'>/image_dithered.png</a></li><li><a href='/image.bin'>/image.bin</a></li></ul>",
+    )
 }
 
 async fn get_image(_state: State<AppState>) -> impl IntoResponse {
@@ -148,8 +152,11 @@ async fn get_image(_state: State<AppState>) -> impl IntoResponse {
             let render_start = std::time::Instant::now();
             let svg = render_svg(&flight);
             let render_duration = render_start.elapsed();
-            
-            info!("Request processed: fetch={:?}, render_svg={:?}", fetch_duration, render_duration);
+
+            info!(
+                "Request processed: fetch={:?}, render_svg={:?}",
+                fetch_duration, render_duration
+            );
 
             Response::builder()
                 .header("Content-Type", "image/svg+xml")
@@ -191,14 +198,17 @@ async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
             match svg_to_png(&svg, &state.usvg_options) {
                 Ok(png) => {
                     let png_duration = png_start.elapsed();
-                    info!("Request processed (PNG): fetch={:?}, render_svg={:?}, render_png={:?}", fetch_duration, svg_duration, png_duration);
-                    
+                    info!(
+                        "Request processed (PNG): fetch={:?}, render_svg={:?}, render_png={:?}",
+                        fetch_duration, svg_duration, png_duration
+                    );
+
                     Response::builder()
                         .header("Content-Type", "image/png")
                         .header("Cache-Control", "no-cache, no-store, must-revalidate")
                         .body(Body::from(png))
                         .unwrap()
-                },
+                }
                 Err(e) => {
                     error!("Error rendering PNG: {}", e);
                     Response::builder()
@@ -218,7 +228,7 @@ async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
                         .header("Cache-Control", "no-cache, no-store, must-revalidate")
                         .body(Body::from(png))
                         .unwrap()
-                },
+                }
                 Err(e) => {
                     error!("Error rendering PNG: {}", e);
                     Response::builder()
@@ -248,38 +258,49 @@ async fn get_image_dithered_png(State(state): State<AppState>) -> impl IntoRespo
             let svg = render_svg(&flight);
             match svg_to_dithered_png(&svg, &state.usvg_options) {
                 Ok(png) => {
-                    info!("Request processed (Dithered PNG): fetch={:?}, total={:?}", fetch_duration, start.elapsed());
+                    info!(
+                        "Request processed (Dithered PNG): fetch={:?}, total={:?}",
+                        fetch_duration,
+                        start.elapsed()
+                    );
                     Response::builder()
                         .header("Content-Type", "image/png")
                         .header("Cache-Control", "no-cache, no-store, must-revalidate")
                         .body(Body::from(png))
                         .unwrap()
-                },
+                }
                 Err(e) => {
                     error!("Error rendering dithered PNG: {}", e);
-                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                    Response::builder()
+                        .status(500)
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap()
                 }
             }
         }
         Ok(None) => {
             let svg = render_no_flight_svg();
             match svg_to_dithered_png(&svg, &state.usvg_options) {
-                Ok(png) => {
-                    Response::builder()
-                        .header("Content-Type", "image/png")
-                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                        .body(Body::from(png))
-                        .unwrap()
-                },
+                Ok(png) => Response::builder()
+                    .header("Content-Type", "image/png")
+                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    .body(Body::from(png))
+                    .unwrap(),
                 Err(e) => {
                     error!("Error rendering dithered PNG: {}", e);
-                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                    Response::builder()
+                        .status(500)
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap()
                 }
             }
         }
         Err(e) => {
             error!("Error fetching flight: {}", e);
-            Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+            Response::builder()
+                .status(500)
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap()
         }
     }
 }
@@ -294,38 +315,49 @@ async fn get_image_bin(State(state): State<AppState>) -> impl IntoResponse {
             let svg = render_svg(&flight);
             match svg_to_epd_bin(&svg, &state.usvg_options) {
                 Ok(bin) => {
-                    info!("Request processed (BIN): fetch={:?}, total={:?}", fetch_duration, start.elapsed());
+                    info!(
+                        "Request processed (BIN): fetch={:?}, total={:?}",
+                        fetch_duration,
+                        start.elapsed()
+                    );
                     Response::builder()
                         .header("Content-Type", "application/octet-stream")
                         .header("Cache-Control", "no-cache, no-store, must-revalidate")
                         .body(Body::from(bin))
                         .unwrap()
-                },
+                }
                 Err(e) => {
                     error!("Error rendering BIN: {}", e);
-                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                    Response::builder()
+                        .status(500)
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap()
                 }
             }
         }
         Ok(None) => {
             let svg = render_no_flight_svg();
             match svg_to_epd_bin(&svg, &state.usvg_options) {
-                Ok(bin) => {
-                    Response::builder()
-                        .header("Content-Type", "application/octet-stream")
-                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                        .body(Body::from(bin))
-                        .unwrap()
-                },
+                Ok(bin) => Response::builder()
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    .body(Body::from(bin))
+                    .unwrap(),
                 Err(e) => {
                     error!("Error rendering BIN: {}", e);
-                    Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+                    Response::builder()
+                        .status(500)
+                        .body(Body::from(format!("Error: {}", e)))
+                        .unwrap()
                 }
             }
         }
         Err(e) => {
             error!("Error fetching flight: {}", e);
-            Response::builder().status(500).body(Body::from(format!("Error: {}", e))).unwrap()
+            Response::builder()
+                .status(500)
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap()
         }
     }
 }
@@ -341,13 +373,33 @@ fn svg_to_epd_bin(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std
 }
 
 fn get_epd_color(rgb: [u8; 3]) -> u8 {
-    if rgb == [0, 0, 0] { 0 }       // BLACK
-    else if rgb == [255, 255, 255] { 1 } // WHITE
-    else if rgb == [255, 255, 0] { 2 }   // YELLOW
-    else if rgb == [255, 0, 0] { 3 }     // RED
-    else if rgb == [0, 0, 255] { 5 }     // BLUE
-    else if rgb == [0, 255, 0] { 6 }     // GREEN
-    else { 1 } // Default to WHITE
+    if rgb == [0, 0, 0] {
+        0
+    }
+    // BLACK
+    else if rgb == [255, 255, 255] {
+        1
+    }
+    // WHITE
+    else if rgb == [255, 255, 0] {
+        2
+    }
+    // YELLOW
+    else if rgb == [255, 0, 0] {
+        3
+    }
+    // RED
+    else if rgb == [0, 0, 255] {
+        5
+    }
+    // BLUE
+    else if rgb == [0, 255, 0] {
+        6
+    }
+    // GREEN
+    else {
+        1
+    } // Default to WHITE
 }
 
 fn pixmap_to_epd_bin(pixmap: Pixmap) -> Vec<u8> {
@@ -398,7 +450,10 @@ fn pixmap_to_epd_bin(pixmap: Pixmap) -> Vec<u8> {
     buffer
 }
 
-fn svg_to_dithered_png(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn svg_to_dithered_png(
+    svg: &str,
+    opt: &usvg::Options,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let tree = Tree::from_str(svg, opt)?;
     let pixmap_size = tree.size();
     let mut pixmap = Pixmap::new(pixmap_size.width() as u32, pixmap_size.height() as u32).unwrap();
@@ -412,7 +467,7 @@ fn apply_floyd_steinberg(pixmap: Pixmap) -> Pixmap {
     let width = pixmap.width() as usize;
     let height = pixmap.height() as usize;
     let mut data = vec![[0.0f32; 3]; width * height];
-    
+
     // Convert to f32 for dithering
     for (i, pixel) in pixmap.pixels().iter().enumerate() {
         data[i] = [
@@ -534,6 +589,7 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
             flights.push(Flight {
                 icao24,
                 callsign,
+                flight_number: None,
                 aircraft_type: None,
                 distance,
                 photo_url: None,
@@ -565,6 +621,7 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
             flight.origin_name = Some(route.origin.municipality);
             flight.dest_iata = Some(route.destination.iata_code);
             flight.dest_name = Some(route.destination.municipality);
+            flight.flight_number = route.callsign_iata;
         }
         if let Some(aircraft) = fetch_aircraft_info(&flight.icao24).await {
             flight.aircraft_type = Some(aircraft.aircraft_type);
@@ -634,6 +691,7 @@ fn render_svg(flight: &Flight) -> String {
     };
 
     let aircraft_type = flight.aircraft_type.as_deref().unwrap_or("Unknown");
+    let flight_number = flight.flight_number.as_deref().unwrap_or("---");
 
     let origin_iata = flight.origin_iata.as_deref().unwrap_or("???");
     let origin_name = flight.origin_name.as_deref().unwrap_or("Unknown Origin");
@@ -682,15 +740,21 @@ fn render_svg(flight: &Flight) -> String {
   <!-- Info Row (Bottom) -->
   <g transform='translate(0, 1090)'>
     <!-- Callsign -->
-    <g transform='translate(400, 0)'>
+    <g transform='translate(200, 0)'>
       <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>CALLSIGN</text>
       <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{callsign}</text>
     </g>
 
+    <!-- Flight Number -->
+    <g transform='translate(800, 0)'>
+      <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>FLIGHT</text>
+      <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{flight_number}</text>
+    </g>
+
     <!-- Aircraft Type -->
-    <g transform='translate(1200, 0)'>
+    <g transform='translate(1400, 0)'>
       <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>AIRCRAFT TYPE</text>
-      <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{aircraft_type}</text>
+      <text x='0' y='85' font-family='Google Sans, sans-serif' font-size='70' text-anchor='middle' fill='#000000' font-weight='bold'>{aircraft_type}</text>
     </g>
   </g>
 </svg>"#,
@@ -700,6 +764,7 @@ fn render_svg(flight: &Flight) -> String {
         dest_iata = dest_iata,
         dest_name = dest_name,
         callsign = callsign,
+        flight_number = flight_number,
         aircraft_type = aircraft_type
     )
 }
@@ -713,6 +778,7 @@ mod tests {
         let flight = Flight {
             icao24: "test".to_string(),
             callsign: "TEST123".to_string(),
+            flight_number: Some("LX123".to_string()),
             aircraft_type: Some("Airbus A320".to_string()),
             distance: 0.1,
             photo_url: Some("http://example.com/photo.jpg".to_string()),
@@ -724,6 +790,7 @@ mod tests {
         };
         let svg = render_svg(&flight);
         assert!(svg.contains("TEST123"));
+        assert!(svg.contains("LX123"));
         assert!(svg.contains("WAW"));
         assert!(svg.contains("ZRH"));
         assert!(svg.contains("Airbus A320"));
@@ -736,7 +803,6 @@ mod tests {
         assert!(svg.contains("No flights overhead"));
     }
 }
-
 
 fn render_no_flight_svg() -> String {
     r#"<svg width='1600' height='1200' viewBox='0 0 1600 1200' xmlns='http://www.w3.org/2000/svg'>
