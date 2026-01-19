@@ -5,7 +5,9 @@ use axum::{
     body::Body,
     extract::State,
 };
+use tower_http::trace::TraceLayer;
 use serde::Deserialize;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -80,7 +82,13 @@ struct Flight {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "radar=info,tower_http=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     let mut fontdb = fontdb::Database::new();
     fontdb.load_system_fonts();
@@ -95,6 +103,7 @@ async fn main() {
         .route("/", get(index))
         .route("/image.svg", get(get_image))
         .route("/image.png", get(get_image_png))
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
@@ -109,9 +118,18 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn get_image(_state: State<AppState>) -> impl IntoResponse {
-    match fetch_closest_flight().await {
+    let start = std::time::Instant::now();
+    let fetch_result = fetch_closest_flight().await;
+    let fetch_duration = start.elapsed();
+
+    match fetch_result {
         Ok(Some(flight)) => {
+            let render_start = std::time::Instant::now();
             let svg = render_svg(&flight);
+            let render_duration = render_start.elapsed();
+            
+            info!("Request processed: fetch={:?}, render_svg={:?}", fetch_duration, render_duration);
+
             Response::builder()
                 .header("Content-Type", "image/svg+xml")
                 .header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -120,6 +138,7 @@ async fn get_image(_state: State<AppState>) -> impl IntoResponse {
         }
         Ok(None) => {
             let svg = render_no_flight_svg();
+            info!("No flight found: fetch={:?}", fetch_duration);
             Response::builder()
                 .header("Content-Type", "image/svg+xml")
                 .header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -127,7 +146,7 @@ async fn get_image(_state: State<AppState>) -> impl IntoResponse {
                 .unwrap()
         }
         Err(e) => {
-            error!("Error fetching flight: {}", e);
+            error!("Error fetching flight: {} (took {:?})", e, fetch_duration);
             Response::builder()
                 .status(500)
                 .body(format!("Error: {}", e))
@@ -137,15 +156,28 @@ async fn get_image(_state: State<AppState>) -> impl IntoResponse {
 }
 
 async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
-    match fetch_closest_flight().await {
+    let start = std::time::Instant::now();
+    let fetch_result = fetch_closest_flight().await;
+    let fetch_duration = start.elapsed();
+
+    match fetch_result {
         Ok(Some(flight)) => {
+            let svg_start = std::time::Instant::now();
             let svg = render_svg(&flight);
+            let svg_duration = svg_start.elapsed();
+
+            let png_start = std::time::Instant::now();
             match svg_to_png(&svg, &state.usvg_options) {
-                Ok(png) => Response::builder()
-                    .header("Content-Type", "image/png")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                    .body(Body::from(png))
-                    .unwrap(),
+                Ok(png) => {
+                    let png_duration = png_start.elapsed();
+                    info!("Request processed (PNG): fetch={:?}, render_svg={:?}, render_png={:?}", fetch_duration, svg_duration, png_duration);
+                    
+                    Response::builder()
+                        .header("Content-Type", "image/png")
+                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                        .body(Body::from(png))
+                        .unwrap()
+                },
                 Err(e) => {
                     error!("Error rendering PNG: {}", e);
                     Response::builder()
@@ -158,11 +190,14 @@ async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
         Ok(None) => {
             let svg = render_no_flight_svg();
             match svg_to_png(&svg, &state.usvg_options) {
-                Ok(png) => Response::builder()
-                    .header("Content-Type", "image/png")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                    .body(Body::from(png))
-                    .unwrap(),
+                Ok(png) => {
+                    info!("No flight found (PNG): fetch={:?}", fetch_duration);
+                    Response::builder()
+                        .header("Content-Type", "image/png")
+                        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                        .body(Body::from(png))
+                        .unwrap()
+                },
                 Err(e) => {
                     error!("Error rendering PNG: {}", e);
                     Response::builder()
@@ -173,7 +208,7 @@ async fn get_image_png(State(state): State<AppState>) -> impl IntoResponse {
             }
         }
         Err(e) => {
-            error!("Error fetching flight: {}", e);
+            error!("Error fetching flight: {} (took {:?})", e, fetch_duration);
             Response::builder()
                 .status(500)
                 .body(Body::from(format!("Error: {}", e)))
@@ -204,6 +239,7 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
     );
 
     let client = reqwest::Client::new();
+    info!("Fetching flights from OpenSky: {}", url);
     let resp: OpenSkyResponse = client.get(url).send().await?.json().await?;
 
     let states = match resp.states {
@@ -242,6 +278,7 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
         if let Some(url) = fetch_photo_url(&flight.icao24).await {
             flight.photo_url = Some(url.clone());
             // Fetch the image and convert to base64 for resvg
+            info!("Fetching plane photo from: {}", url);
             if let Ok(resp) = client.get(url).send().await {
                 if let Ok(bytes) = resp.bytes().await {
                     let b64 = general_purpose::STANDARD.encode(bytes);
@@ -264,6 +301,7 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
 async fn fetch_route(callsign: &str) -> Option<AdsbdbFlightRoute> {
     let url = format!("https://api.adsbdb.com/v0/callsign/{}", callsign);
     let client = reqwest::Client::new();
+    info!("Fetching route for callsign {}: {}", callsign, url);
     let resp: AdsbdbResponse = client
         .get(url)
         .header("User-Agent", "Radar/0.1.0")
@@ -280,6 +318,7 @@ async fn fetch_route(callsign: &str) -> Option<AdsbdbFlightRoute> {
 async fn fetch_photo_url(icao24: &str) -> Option<String> {
     let url = format!("https://api.planespotters.net/pub/photos/hex/{}", icao24);
     let client = reqwest::Client::new();
+    info!("Fetching photo URL for hex {}: {}", icao24, url);
     let resp: PlanespottersResponse = client
         .get(url)
         .header("User-Agent", "Radar/0.1.0")
