@@ -479,10 +479,24 @@ fn apply_floyd_steinberg(pixmap: Pixmap) -> Pixmap {
 
     for y in 0..height {
         for x in 0..width {
-            let old_rgb = data[y * width + x];
-            let new_rgb = find_closest_color(old_rgb);
-            data[y * width + x] = [new_rgb[0] as f32, new_rgb[1] as f32, new_rgb[2] as f32];
+            let idx = y * width + x;
+            let current_pixel = data[idx];
 
+            // 1. CLAMP the value to valid RGB range.
+            // This prevents "phantom" colors from appearing due to error explosion.
+            let old_rgb = [
+                current_pixel[0].clamp(0.0, 255.0),
+                current_pixel[1].clamp(0.0, 255.0),
+                current_pixel[2].clamp(0.0, 255.0),
+            ];
+
+            let new_rgb = find_closest_color(old_rgb);
+
+            // Update the buffer with the final quantized color
+            data[idx] = [new_rgb[0] as f32, new_rgb[1] as f32, new_rgb[2] as f32];
+
+            // 2. Calculate error using the CLAMPED value.
+            // If you use the unclamped value here, the artifacts will persist.
             let err = [
                 old_rgb[0] - new_rgb[0] as f32,
                 old_rgb[1] - new_rgb[1] as f32,
