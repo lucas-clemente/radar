@@ -9,16 +9,33 @@ use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tiny_skia::Pixmap;
+use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use usvg::{Tree, fontdb};
 
 #[derive(Clone)]
+struct OpenSkyToken {
+    access_token: String,
+    expires_at: Instant,
+}
+
+#[derive(Clone)]
 struct AppState {
     usvg_options: Arc<usvg::Options<'static>>,
     client: reqwest::Client,
+    opensky_client_id: Option<String>,
+    opensky_client_secret: Option<String>,
+    opensky_token: Arc<RwLock<Option<OpenSkyToken>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    expires_in: u64,
 }
 
 const FONT_DATA: &[u8] = include_bytes!("../GoogleSans-VariableFont_GRAD,opsz,wght.ttf");
@@ -133,9 +150,21 @@ async fn main() {
         .build()
         .unwrap();
 
+    let opensky_client_id = std::env::var("OPENSKY_CLIENT_ID").ok();
+    let opensky_client_secret = std::env::var("OPENSKY_CLIENT_SECRET").ok();
+
+    if opensky_client_id.is_some() {
+        info!("OpenSky OAuth2 credentials found.");
+    } else {
+        info!("OpenSky OAuth2 credentials not found, using anonymous requests.");
+    }
+
     let state = AppState {
         usvg_options: Arc::new(usvg_options),
         client,
+        opensky_client_id,
+        opensky_client_secret,
+        opensky_token: Arc::new(RwLock::new(None)),
     };
 
     let app = Router::new()
@@ -233,7 +262,8 @@ where
 
 async fn fetch_svg(state: &AppState) -> Result<String, Response> {
     let start = std::time::Instant::now();
-    let fetch_result = fetch_closest_flight(&state.client).await;
+    let token = get_opensky_token(state).await;
+    let fetch_result = fetch_closest_flight(&state.client, token.as_deref()).await;
     let fetch_duration = start.elapsed();
 
     match fetch_result {
@@ -251,6 +281,61 @@ async fn fetch_svg(state: &AppState) -> Result<String, Response> {
                 .status(500)
                 .body(Body::from(format!("Error: {}", e)))
                 .unwrap())
+        }
+    }
+}
+
+async fn get_opensky_token(state: &AppState) -> Option<String> {
+    let client_id = state.opensky_client_id.as_ref()?;
+    let client_secret = state.opensky_client_secret.as_ref()?;
+
+    // Check if we have a valid cached token
+    {
+        let token_lock = state.opensky_token.read().await;
+        if let Some(token) = token_lock.as_ref() {
+            // Buffer of 60 seconds to avoid edge cases
+            if token.expires_at > Instant::now() + Duration::from_secs(60) {
+                return Some(token.access_token.clone());
+            }
+        }
+    }
+
+    // Otherwise, fetch a new one
+    let mut token_lock = state.opensky_token.write().await;
+
+    // Re-check in case another thread fetched it while we were waiting for the write lock
+    if let Some(token) = token_lock.as_ref() {
+        if token.expires_at > Instant::now() + Duration::from_secs(60) {
+            return Some(token.access_token.clone());
+        }
+    }
+
+    let url = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
+    let params = [
+        ("grant_type", "client_credentials"),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+    ];
+
+    info!("Fetching new OpenSky OAuth2 token");
+    match state.client.post(url).form(&params).send().await {
+        Ok(resp) => match resp.json::<TokenResponse>().await {
+            Ok(token_resp) => {
+                let new_token = OpenSkyToken {
+                    access_token: token_resp.access_token.clone(),
+                    expires_at: Instant::now() + Duration::from_secs(token_resp.expires_in),
+                };
+                *token_lock = Some(new_token);
+                Some(token_resp.access_token)
+            }
+            Err(e) => {
+                error!("Error parsing OpenSky token response: {}", e);
+                None
+            }
+        },
+        Err(e) => {
+            error!("Error fetching OpenSky token: {}", e);
+            None
         }
     }
 }
@@ -438,7 +523,10 @@ fn svg_to_png(svg: &str, opt: &usvg::Options) -> Result<Vec<u8>, Box<dyn std::er
     Ok(pixmap.encode_png()?)
 }
 
-async fn fetch_closest_flight(client: &reqwest::Client) -> Result<Option<Flight>, Box<dyn std::error::Error>> {
+async fn fetch_closest_flight(
+    client: &reqwest::Client,
+    token: Option<&str>,
+) -> Result<Option<Flight>, Box<dyn std::error::Error>> {
     let lamin = LAT - BOX_SIZE;
     let lamax = LAT + BOX_SIZE;
     let lomin = LON - BOX_SIZE;
@@ -450,7 +538,11 @@ async fn fetch_closest_flight(client: &reqwest::Client) -> Result<Option<Flight>
     );
 
     info!("Fetching flights from OpenSky: {}", url);
-    let resp: OpenSkyResponse = client.get(url).send().await?.json().await?;
+    let mut rb = client.get(url);
+    if let Some(t) = token {
+        rb = rb.bearer_auth(t);
+    }
+    let resp: OpenSkyResponse = rb.send().await?.json().await?;
 
     let states = match resp.states {
         Some(s) => s,
@@ -527,14 +619,7 @@ async fn fetch_closest_flight(client: &reqwest::Client) -> Result<Option<Flight>
 async fn fetch_route(client: &reqwest::Client, callsign: &str) -> Option<AdsbdbFlightRoute> {
     let url = format!("https://api.adsbdb.com/v0/callsign/{}", callsign);
     info!("Fetching route for callsign {}: {}", callsign, url);
-    let resp: AdsbdbResponse = client
-        .get(url)
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let resp: AdsbdbResponse = client.get(url).send().await.ok()?.json().await.ok()?;
 
     resp.response.flightroute
 }
@@ -542,14 +627,7 @@ async fn fetch_route(client: &reqwest::Client, callsign: &str) -> Option<AdsbdbF
 async fn fetch_aircraft_info(client: &reqwest::Client, icao24: &str) -> Option<AdsbdbAircraft> {
     let url = format!("https://api.adsbdb.com/v0/aircraft/{}", icao24);
     info!("Fetching aircraft info for hex {}: {}", icao24, url);
-    let resp: AdsbdbResponse = client
-        .get(url)
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let resp: AdsbdbResponse = client.get(url).send().await.ok()?.json().await.ok()?;
 
     resp.response.aircraft
 }
@@ -557,14 +635,7 @@ async fn fetch_aircraft_info(client: &reqwest::Client, icao24: &str) -> Option<A
 async fn fetch_photo_url(client: &reqwest::Client, icao24: &str) -> Option<String> {
     let url = format!("https://api.planespotters.net/pub/photos/hex/{}", icao24);
     info!("Fetching photo URL for hex {}: {}", icao24, url);
-    let resp: PlanespottersResponse = client
-        .get(url)
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let resp: PlanespottersResponse = client.get(url).send().await.ok()?.json().await.ok()?;
 
     resp.photos.first().map(|p| p.thumbnail_large.src.clone())
 }
@@ -705,5 +776,6 @@ mod tests {
 fn render_no_flight_svg() -> String {
     r#"<svg width='1600' height='1200' viewBox='0 0 1600 1200' xmlns='http://www.w3.org/2000/svg'>
   <rect width='1600' height='1200' fill='white' />
-</svg>"#.to_string()
+</svg>"#
+        .to_string()
 }
