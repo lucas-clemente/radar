@@ -31,9 +31,9 @@ const PALETTE: [[u8; 3]; 6] = [
     [0, 255, 0],     // Green
 ];
 
-const LAT: f64 = 47.4197;
-const LON: f64 = 8.4344;
-const BOX_SIZE: f64 = 0.5; // Roughly 50km
+const LAT: f64 = 47.41876326848794;
+const LON: f64 = 8.426291132310645;
+const BOX_SIZE: f64 = 0.1; // Roughly 10km
 
 #[derive(Debug, Deserialize)]
 struct OpenSkyResponse {
