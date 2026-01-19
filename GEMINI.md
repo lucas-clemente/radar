@@ -9,3 +9,4 @@ This backend runs a webserver that renders a 1600x1200 image for the Spectra 6 E
 - Implemented in rust
 - Uses [OpenSky](https://openskynetwork.github.io/opensky-api/rest.html) to show the closest flight, centered around Weiningen ZH, CH (47.4197° N, 8.4344° E).
 - Displays the plane's information in an SVG.
+- Uses [planespotters.net](https://www.planespotters.net/photo/api) to retrieve an image of the plane.

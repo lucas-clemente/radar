@@ -16,16 +16,31 @@ struct OpenSkyResponse {
     states: Option<Vec<Vec<serde_json::Value>>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PlanespottersResponse {
+    photos: Vec<PlanespottersPhoto>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanespottersPhoto {
+    thumbnail_large: PlanespottersImage,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanespottersImage {
+    src: String,
+}
+
 #[derive(Debug, Clone)]
 struct Flight {
-    _icao24: String,
+    icao24: String,
     callsign: String,
     origin_country: String,
     _longitude: f64,
     _latitude: f64,
     altitude: Option<f64>,
-    velocity: Option<f64>,
     distance: f64,
+    photo_url: Option<String>,
 }
 
 #[tokio::main]
@@ -102,26 +117,46 @@ async fn fetch_closest_flight() -> Result<Option<Flight>, Box<dyn std::error::Er
         let longitude = state[5].as_f64();
         let latitude = state[6].as_f64();
         let altitude = state[7].as_f64();
-        let velocity = state[9].as_f64();
 
         if let (Some(lat), Some(lon)) = (latitude, longitude) {
             let distance = ((lat - LAT).powi(2) + (lon - LON).powi(2)).sqrt();
             flights.push(Flight {
-                _icao24: icao24,
+                icao24,
                 callsign,
                 origin_country,
                 _longitude: lon,
                 _latitude: lat,
                 altitude,
-                velocity,
                 distance,
+                photo_url: None,
             });
         }
     }
 
     flights.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
 
-    Ok(flights.first().cloned())
+    if let Some(mut flight) = flights.first().cloned() {
+        flight.photo_url = fetch_photo_url(&flight.icao24).await;
+        Ok(Some(flight))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn fetch_photo_url(icao24: &str) -> Option<String> {
+    let url = format!("https://api.planespotters.net/pub/photos/hex/{}", icao24);
+    let client = reqwest::Client::new();
+    let resp: PlanespottersResponse = client
+        .get(url)
+        .header("User-Agent", "Radar/0.1.0")
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    resp.photos.first().map(|p| p.thumbnail_large.src.clone())
 }
 
 fn render_svg(flight: &Flight) -> String {
@@ -131,47 +166,83 @@ fn render_svg(flight: &Flight) -> String {
         &flight.callsign
     };
 
-    let alt = flight.altitude.map(|a| format!("{:.0} ft", a * 3.28084)).unwrap_or_else(|| "N/A".to_string());
-    let vel = flight.velocity.map(|v| format!("{:.0} km/h", v * 3.6)).unwrap_or_else(|| "N/A".to_string());
+    let alt = flight
+        .altitude
+        .map(|a| format!("{:.0} ft", a * 3.28084))
+        .unwrap_or_else(|| "N/A".to_string());
+
+    let photo_url = flight.photo_url.as_deref().unwrap_or("");
+    let has_photo = !photo_url.is_empty();
+
+    let image_layer = if has_photo {
+        format!(
+            r#"<image id="bg" href="{}" width="1600" height="1200" preserveAspectRatio="xMidYMid slice" />"#,
+            photo_url
+        )
+    } else {
+        "".to_string()
+    };
+
+    let blur_layer = if has_photo {
+        r#"
+  <g clip-path='url(#topBoxClip)'>
+    <use href='#bg' filter='url(#blurEffect)' />
+  </g>
+  <g clip-path='url(#bottomBoxClip)'>
+    <use href='#bg' filter='url(#blurEffect)' />
+  </g>"#
+            .to_string()
+    } else {
+        "".to_string()
+    };
 
     format!(
         r#"<svg width='1600' height='1200' viewBox='0 0 1600 1200' xmlns='http://www.w3.org/2000/svg'>
-  <rect width='1600' height='1200' fill='white' />
+  <defs>
+    <filter id='blurEffect'>
+      <feGaussianBlur stdDeviation='15' />
+    </filter>
+    <clipPath id='topBoxClip'>
+      <rect x='100' y='50' width='1400' height='150' rx='30' />
+    </clipPath>
+    <clipPath id='bottomBoxClip'>
+      <rect x='100' y='920' width='1400' height='230' rx='30' />
+    </clipPath>
+  </defs>
 
-  <!-- Main Display Area -->
-  <g transform='translate(800, 450)'>
-    <!-- Callsign -->
-    <text x='0' y='50' font-family='sans-serif' font-size='250' text-anchor='middle' fill='#2980b9' font-weight='bold'>{callsign}</text>
+  <rect width='1600' height='1200' fill='white' />
+  {image_layer}
+  {blur_layer}
+
+  <!-- Glass Overlay Boxes -->
+  <rect x='100' y='50' width='1400' height='150' rx='30' fill='white' fill-opacity='0.4' />
+  <rect x='100' y='920' width='1400' height='230' rx='30' fill='white' fill-opacity='0.4' />
+
+  <!-- Callsign (Top) -->
+  <g transform='translate(800, 155)'>
+    <text x='0' y='0' font-family='sans-serif' font-size='90' text-anchor='middle' fill='#000000' font-weight='bold'>{callsign}</text>
   </g>
 
-  <!-- Info Row -->
-  <g transform='translate(0, 850)'>
+  <!-- Info Row (Bottom) -->
+  <g transform='translate(0, 1000)'>
     <!-- Country -->
-    <g transform='translate(266, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#7f8c8d'>ORIGIN</text>
-      <text x='0' y='80' font-family='sans-serif' font-size='70' text-anchor='middle' fill='#2c3e50' font-weight='bold'>{origin_country}</text>
+    <g transform='translate(400, 0)'>
+      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>ORIGIN</text>
+      <text x='0' y='80' font-family='sans-serif' font-size='70' text-anchor='middle' fill='#000000' font-weight='bold'>{origin_country}</text>
     </g>
 
     <!-- Altitude -->
-    <g transform='translate(800, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#7f8c8d'>ALTITUDE</text>
-      <text x='0' y='80' font-family='sans-serif' font-size='70' text-anchor='middle' fill='#2c3e50' font-weight='bold'>{alt}</text>
-    </g>
-
-    <!-- Speed -->
-    <g transform='translate(1333, 0)'>
-      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#7f8c8d'>SPEED</text>
-      <text x='0' y='80' font-family='sans-serif' font-size='70' text-anchor='middle' fill='#2c3e50' font-weight='bold'>{vel}</text>
+    <g transform='translate(1200, 0)'>
+      <text x='0' y='0' font-family='sans-serif' font-size='40' text-anchor='middle' fill='#000000'>ALTITUDE</text>
+      <text x='0' y='80' font-family='sans-serif' font-size='70' text-anchor='middle' fill='#000000' font-weight='bold'>{alt}</text>
     </g>
   </g>
-
-  <!-- Decorative Line -->
-  <rect x='100' y='750' width='1400' height='4' fill='#ecf0f1' />
 </svg>"#,
+        image_layer = image_layer,
+        blur_layer = blur_layer,
         callsign = callsign,
         origin_country = flight.origin_country,
-        alt = alt,
-        vel = vel
+        alt = alt
     )
 }
 
@@ -182,21 +253,21 @@ mod tests {
     #[test]
     fn test_render_svg() {
         let flight = Flight {
-            _icao24: "test".to_string(),
+            icao24: "test".to_string(),
             callsign: "TEST123".to_string(),
             origin_country: "Testland".to_string(),
             _longitude: 0.0,
             _latitude: 0.0,
             altitude: Some(10000.0),
-            velocity: Some(250.0),
             distance: 0.1,
+            photo_url: Some("http://example.com/photo.jpg".to_string()),
         };
         let svg = render_svg(&flight);
         assert!(svg.contains("TEST123"));
         assert!(svg.contains("Testland"));
         assert!(svg.contains("32808 ft")); // 10000 * 3.28084
-        assert!(svg.contains("900 km/h")); // 250 * 3.6
-        assert!(!svg.contains("Data from OpenSky Network"));
+        assert!(svg.contains("http://example.com/photo.jpg"));
+        assert!(!svg.contains("900 km/h")); // Speed should be gone
     }
 
     #[test]
