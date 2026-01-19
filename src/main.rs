@@ -511,11 +511,11 @@ fn render_svg(flight: &Flight) -> String {
   {image_layer}
 
   <!-- Overlay Boxes -->
-  <rect x='100' y='20' width='1400' height='150' rx='30' fill='white' fill-opacity='0.8' />
-  <rect x='100' y='950' width='1400' height='230' rx='30' fill='white' fill-opacity='0.8' />
+  <rect x='0' y='0' width='1600' height='160' fill='white' fill-opacity='0.8' />
+  <rect x='0' y='1040' width='1600' height='160' fill='white' fill-opacity='0.8' />
 
   <!-- Route (Top) -->
-  <g transform='translate(0, 100)'>
+  <g transform='translate(0, 105)'>
     <!-- Origin -->
     <g transform='translate(400, 0)'>
       <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='100' text-anchor='middle' fill='#000000' font-weight='bold'>{origin_iata}</text>
@@ -533,7 +533,7 @@ fn render_svg(flight: &Flight) -> String {
   </g>
 
   <!-- Info Row (Bottom) -->
-  <g transform='translate(0, 1040)'>
+  <g transform='translate(0, 1090)'>
     <!-- Callsign -->
     <g transform='translate(400, 0)'>
       <text x='0' y='0' font-family='Google Sans, sans-serif' font-size='40' text-anchor='middle' fill='#000000'>CALLSIGN</text>
